@@ -45,13 +45,18 @@ from funkcije import closest_point_on_path, add_times_simple
 app = Flask(__name__)
 CORS(app)
 
-# Load Firebase service account from file or FIREBASE_SERVICE_ACCOUNT env var
+# Load Firebase service account from file or env var
+# Supports FIREBASE_SERVICE_ACCOUNT as raw JSON or FIREBASE_SERVICE_ACCOUNT_B64 as base64
 if os.path.exists("PraviKljuc.json"):
     cred = credentials.Certificate("PraviKljuc.json")
 else:
-    sa_json = os.getenv("FIREBASE_SERVICE_ACCOUNT", "{}")
-    # Handle escaped newlines in the env var (Render/Docker escape \\n as literal)
-    sa_dict = json.loads(sa_json, strict=False)
+    import base64
+    sa_b64 = os.getenv("FIREBASE_SERVICE_ACCOUNT_B64", "")
+    if sa_b64:
+        sa_dict = json.loads(base64.b64decode(sa_b64))
+    else:
+        sa_json = os.getenv("FIREBASE_SERVICE_ACCOUNT", "{}")
+        sa_dict = json.loads(sa_json, strict=False)
     cred = credentials.Certificate(sa_dict)
 
 firebase_admin.initialize_app(cred)
