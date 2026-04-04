@@ -50,7 +50,8 @@ if os.path.exists("PraviKljuc.json"):
     cred = credentials.Certificate("PraviKljuc.json")
 else:
     sa_json = os.getenv("FIREBASE_SERVICE_ACCOUNT", "{}")
-    sa_dict = json.loads(sa_json)
+    # Handle escaped newlines in the env var (Render/Docker escape \\n as literal)
+    sa_dict = json.loads(sa_json, strict=False)
     cred = credentials.Certificate(sa_dict)
 
 firebase_admin.initialize_app(cred)
