@@ -222,14 +222,22 @@ def povezi_putnika():
         # Must be same date
         if d.get("datumVozac") != putnik_datum:
             continue
-        # Driver departs at or after passenger's requested time
-        if d.get("vreme", "") < putnik_vreme:
-            continue
+        # Driver and passenger must be within 30 minutes of each other
+        driver_vreme = d.get("vreme", "")
+        if driver_vreme:
+            dh, dm = map(int, driver_vreme.split(":"))
+            ph, pm = map(int, putnik_vreme.split(":"))
+            diff = abs((dh * 60 + dm) - (ph * 60 + pm))
+            if diff > 30:
+                continue
         # Skip own routes — can't pair with yourself
         if d.get("idVozaca") == id_putnika:
             continue
-        # Not already paired
-        if d.get("idPair"):
+        # Skip if this passenger is already paired to this route
+        paired = d.get("idPair") or []
+        if isinstance(paired, str):
+            paired = [paired]
+        if id_putnika in paired:
             continue
 
         tacke = [list(map(float, t.split(", "))) for t in d.get("listaTacaka", [])]
@@ -292,13 +300,13 @@ def potvrdi_par():
         return jsonify({"error": "Route not found"}), 404
 
     d = doc.to_dict()
-    if d.get("idPair"):
-        return jsonify({"error": "Route already paired"}), 409
 
+    # Append to paired list instead of overwriting
+    from google.cloud.firestore import ArrayUnion
     doc_ref.update({
-        "idPair": id_putnika,
+        "idPair": ArrayUnion([id_putnika]),
         "datumPutnik": putnik_datum,
-        "pairPoint": f"{pickup_lat}, {pickup_lng}",
+        "pairPoint": ArrayUnion([f"{pickup_lat}, {pickup_lng}"]),
         "pairTime": None,
     })
 
