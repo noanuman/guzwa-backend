@@ -222,8 +222,11 @@ def povezi_putnika():
         # Must be same date
         if d.get("datumVozac") != putnik_datum:
             continue
-        # Driver departs after passenger's requested time
-        if d.get("vreme", "") <= putnik_vreme:
+        # Driver departs at or after passenger's requested time
+        if d.get("vreme", "") < putnik_vreme:
+            continue
+        # Skip own routes — can't pair with yourself
+        if d.get("idVozaca") == id_putnika:
             continue
         # Not already paired
         if d.get("idPair"):
@@ -246,21 +249,60 @@ def povezi_putnika():
             best_route = putanja
 
     if best_route is not None:
-        admin_db.collection("Putanje").document(best_route.id).update({
-            "idPair": id_putnika,
-            "pairPoint": None,
-            "pairTime": None,
-            "datumPutnik": putnik_datum,
-        })
+        rd = best_route.to_dict()
         return jsonify({
             "ok": True,
             "id": best_route.id,
             "score": best_score,
-            "idVozaca": best_route.to_dict().get("idVozaca"),
-            "vreme": best_route.to_dict().get("vreme"),
+            "idVozaca": rd.get("idVozaca"),
+            "vreme": rd.get("vreme"),
+            "listaTacaka": rd.get("listaTacaka", []),
         })
     else:
         return jsonify({"ok": False, "error": "No matching route found"}), 404
+
+
+@app.route("/api/potvrdiPar", methods=["POST"])
+def potvrdi_par():
+    """
+    Passenger confirms pairing with a driver route and sets a pickup point.
+
+    JSON body:
+    {
+        "putanjaId": "doc_id",
+        "id_putnika": "uid",
+        "datumPutnik": "2026-04-10",
+        "pickupLat": 44.123,
+        "pickupLng": 20.456
+    }
+    """
+    data = request.get_json(force=True)
+    putanja_id = data.get("putanjaId")
+    id_putnika = data.get("id_putnika")
+    putnik_datum = data.get("datumPutnik")
+    pickup_lat = data.get("pickupLat")
+    pickup_lng = data.get("pickupLng")
+
+    if not all([putanja_id, id_putnika, putnik_datum, pickup_lat is not None, pickup_lng is not None]):
+        return jsonify({"error": "putanjaId, id_putnika, datumPutnik, pickupLat, pickupLng required"}), 400
+
+    doc_ref = admin_db.collection("Putanje").document(putanja_id)
+    doc = doc_ref.get()
+    if not doc.exists:
+        return jsonify({"error": "Route not found"}), 404
+
+    d = doc.to_dict()
+    if d.get("idPair"):
+        return jsonify({"error": "Route already paired"}), 409
+
+    doc_ref.update({
+        "idPair": id_putnika,
+        "datumPutnik": putnik_datum,
+        "pairPoint": f"{pickup_lat}, {pickup_lng}",
+        "pairTime": None,
+    })
+
+    return jsonify({"ok": True})
 
 
 @app.route("/api/odaberiTacku", methods=["POST"])
@@ -392,11 +434,81 @@ def get_putanje_putnika(putnik_id):
     return jsonify(result)
 
 
+@app.route("/api/putanja/<doc_id>", methods=["DELETE"])
+def obrisi_putanju(doc_id):
+    """Delete a route entirely (e.g. when driver cancels the ride)."""
+    doc_ref = admin_db.collection("Putanje").document(doc_id)
+    doc = doc_ref.get()
+    if not doc.exists:
+        return jsonify({"error": "Not found"}), 404
+    doc_ref.delete()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/putanja/<doc_id>/otkaziPar", methods=["POST"])
+def otkazi_par(doc_id):
+    """Driver cancels a ride — clear the pairing so pickup marker disappears."""
+    doc_ref = admin_db.collection("Putanje").document(doc_id)
+    doc = doc_ref.get()
+    if not doc.exists:
+        return jsonify({"error": "Not found"}), 404
+    doc_ref.update({
+        "idPair": None,
+        "pairPoint": None,
+        "pairTime": None,
+        "datumPutnik": None,
+    })
+    return jsonify({"ok": True})
+
+
+@app.route("/api/putanje/ocistiSve", methods=["POST"])
+def ocisti_sve():
+    """Delete all Putanje documents (admin/debug)."""
+    docs = admin_db.collection("Putanje").stream()
+    count = 0
+    for d in docs:
+        admin_db.collection("Putanje").document(d.id).delete()
+        count += 1
+    return jsonify({"ok": True, "deleted": count})
+
+
+@app.route("/api/rides/ocistiOtkazane", methods=["POST"])
+def ocisti_otkazane_rides():
+    """Delete all cancelled rides from Firestore."""
+    docs = admin_db.collection("rides").where("status", "==", "cancelled").stream()
+    count = 0
+    for d in docs:
+        admin_db.collection("rides").document(d.id).delete()
+        count += 1
+    return jsonify({"ok": True, "deleted": count})
+
+
 # ===========================================================================
 # ROAD PROBLEMS
 # ===========================================================================
 
-CONFIRMATIONS_NEEDED = 3
+LIKES_FOR_REWARD = 3
+
+@app.route("/api/problems/retroBodovi", methods=["POST"])
+def retro_bodovi():
+    """Retroactively award points for problems with 3+ likes."""
+    docs = admin_db.collection("road_problems").stream()
+    awarded = 0
+    for d in docs:
+        data = d.to_dict()
+        likes = data.get("likes", [])
+        reporter_id = data.get("reporterId")
+        if len(likes) >= LIKES_FOR_REWARD and reporter_id:
+            user_ref = admin_db.collection("users").document(reporter_id)
+            user_doc = user_ref.get()
+            if user_doc.exists:
+                from google.cloud.firestore import Increment
+                user_ref.update({"points": Increment(3)})
+            else:
+                user_ref.set({"points": 3})
+            awarded += 1
+    return jsonify({"ok": True, "awarded": awarded})
+
 
 @app.route("/api/problems", methods=["GET"])
 def get_problems():
